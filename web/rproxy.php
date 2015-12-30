@@ -1,80 +1,83 @@
 <?php
-// Set JSON header
-JResponse::setHeader('Content-Type', 'application/json; charset=utf-8');
-JResponse::sendHeaders();
+error_reporting(E_ALL & ~E_NOTICE);
+ini_set("display_errors", 1);
 
-$op = strtolower(JRequest::getVar('op'));
-$req = array();
-$rsp = array();
+// proxy thru libcurl
 
-$req['data'] = json_decode(file_get_contents('php://input'));
+$req_method = strtoupper($_SERVER["REQUEST_METHOD"]);
+$req_url = $_SERVER["QUERY_STRING"];
+$req_headers = apache_request_headers();
+$req_body = file_get_contents("php://input");
+$req_body_size = strlen($req_body);
 
-// read project ini
-$path_project_ini = JPATH_BASE . DS . 'conf' . DS . 'install.ini';
-$project_ini = parse_ini_file($path_project_ini, true);
-
-// read setup.cfg
-$path_setup_cfg = $project_ini['package']['tmscp'] . DS . 'setup.cfg';
-$path_setup_cmd = "/usr/bin/python " . $project_ini['package']['tmscp'] . DS . 'setup.py';
-$ini = parse_ini_file($path_setup_cfg, true);
-
-if ( $op == 'get' ) {
-	$data = array();
-	foreach($ini['http_reverse_proxy'] as $path => $url) {
-		$data[] = array('path'=>$path, 'url'=>$url);
-	}
-
-	$rsp['data'] = $data;
-	$rsp['total'] = count($data);
-
-	echo json_encode($rsp);
-}
-else if ( $op = 'set' ) {
-	$ini['http_reverse_proxy'] = array();
-	foreach($req['data'] as $i => $item){
-		$ini['http_reverse_proxy']["{$item->path}"] = $item->url;
-	}
-	file_put_contents($path_setup_cfg, create_ini_str($ini), LOCK_EX);
-	sudo_exec($path_setup_cmd, $ret);
-	
-	if ( $ret == 0 )
-		echo json_encode($ini['http_reverse_proxy']);
-	else
-		echo json_encode($rsp);
-}
-
-// Close the application.
-JFactory::getApplication()->close();
-
-function create_ini_str($arr)
+$headers = array();
+foreach($req_headers as $name => $value)
 {
-	if ( !is_array($arr) ) return false;
-
-	$str = '';
-	foreach($arr as $section => $pair) {
-		if ( !is_array($pair) )
-			continue;
-		
-		$str .= "[$section]\n";
-		foreach($pair as $key => $val){
-			$str .= "$key=$val\n";
-		}
-		$str .= "\n";
-	}
-	
-	return $str;
+	$headers[] = "$name: $value";
 }
 
-function sudo_exec($cmd, &$ret = 0)
+$options = array();
+$options[CURLOPT_CUSTOMREQUEST] = $req_method; 
+$options[CURLOPT_URL] = $req_url;
+//$options[CURLOPT_FOLLOWLOCATION] = 1;
+//$options[CURLOPT_HEADER] = 1;
+$options[CURLOPT_NOPROGRESS] = false;
+$options[CURLOPT_BUFFERSIZE] = 128;
+$options[CURLOPT_RETURNTRANSFER] = 1;
+$options[CURLOPT_TIMEOUT] = 0;
+$options[CURLOPT_SSL_VERIFYPEER] = false;
+if ( $req_body_size > 0 )
 {
-	define('SUDO', '/usr/bin/sudo');
-	//$new_cmd = sprintf(SUDO." sh -c '%s' 2>/dev/null", $cmd);
-	$new_cmd = sprintf(SUDO." %s", $cmd);
-
-	ob_start();
-	@system($new_cmd, $ret);
-	$output = ob_get_contents();
-	ob_end_clean();
-
-	return $output;
+	$options[CURLOPT_POSTFIELDS] = $req_body;
+	$headers[] = "Content-Length: {$req_body_size}";
 }
+else
+{
+	$options[CURLOPT_POSTFIELDS] = null;
+	$headers[] = "Content-Length: 0";
+}
+
+$options[CURLOPT_WRITEFUNCTION] = function($ch, $buf)
+{
+	$len = strlen($buf);
+	echo $buf;
+	
+	return $len;
+};
+
+/*
+$options[CURLOPT_HEADERFUNCTION] = function($ch, $line)
+{
+	$len = strlen($line);
+	header($line);
+	
+	return $len;
+};
+//*/
+
+$options[CURLOPT_HTTPHEADER] = $headers;
+
+$ch = curl_init();
+
+curl_setopt_array($ch, $options);
+$response = curl_exec($ch);
+
+var_dump($response);
+var_dump(curl_errno($ch));
+var_dump(curl_error($ch));
+
+curl_close($ch);
+
+/*
+// proxy thru fopen()
+
+$fh = fopen('http://tmscp-ps-mgnt01s.sjc1/rmx/api.php/event/ps/api?h=tmscp-ps-ap01.sjc1', 'r');
+stream_set_timeout($fh, 0);
+stream_set_blocking($fh, 0); 
+while(!feof($fh))
+{
+	$line = fgets($fh);
+	echo $line;
+}
+fclose($fh);
+//*/
